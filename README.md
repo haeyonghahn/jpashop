@@ -159,6 +159,8 @@ public class MemberService {
 사용하거나 POST를 사용하는 것이 REST 스타일에 맞다.
 
 #### 회원 조회 API
+> 중요 : `request`, `response` 에 절대. 아니 강제이다. 엔티티를 노출하지말고 Dto 를 이용해라!
+
 __회원조회 V1: 응답 값으로 엔티티를 직접 외부에 노출__
 ```java
 package jpabook.jpashop.api;
