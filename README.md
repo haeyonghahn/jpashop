@@ -10,6 +10,8 @@
     * **[조회용 샘플 데이터 입력](#조회용-샘플-데이터-입력)**
   * **[API 개발 고급 - 지연 로딩과 조회 성능 최적화](#API-개발-고급---지연-로딩과-조회-성능-최적화)**
     * **[간단한 주문 조회 V1: 엔티티를 직접 노출](#간단한-주문-조회-v1-엔티티를-직접-노출)**
+    * **[간단한 주문 조회 V2: 엔티티를 DTO로 변환](#간단한-주문 조회-V2-엔티티를-DTO로-변환)**
+    * **[간단한 주문 조회 V3: 엔티티를 DTO로 변환 - 페치 조인 최적화](#간단한-주문-조회-V3-엔티티를-DTO로-변환---페치-조인-최적화)**
 
 ## 스프링 부트와 JPA 활용1 - 웹 애플리케이션 개발
 ## 스프링 부트와 JPA 활용2 - API 개발과 성능 최적화
@@ -490,3 +492,76 @@ Hibernate5Module hibernate5Module() {
 > 참고: 앞에서 계속 강조했듯이 정말 간단한 애플리케이션이 아니면 엔티티를 API 응답으로 외부로 노출하는 것은 좋지 않다. 따라서 `Hibernate5Module` 를 사용하기 보다는 DTO로 변환해서 반환하는 것이 더 좋은 방법이다.
 
 > 주의: 지연 로딩(LAZY)을 피하기 위해 즉시 로딩(EARGR)으로 설정하면 안된다! 즉시 로딩 때문에 연관관계가 필요 없는 경우에도 데이터를 항상 조회해서 성능 문제가 발생할 수 있다. 즉시 로딩으로 설정하면 성능 튜닝이 매우 어려워 진다. 항상 지연 로딩을 기본으로 하고, 성능 최적화가 필요한 경우에는 페치 조인(fetch join)을 사용해라!(V3에서 설명)
+
+#### 간단한 주문 조회 V2: 엔티티를 DTO로 변환
+__OrderSimpleApiController - 추가__
+```java
+/**
+ * V2. 엔티티를 조회해서 DTO로 변환(fetch join 사용X)
+ * - 단점: 지연로딩으로 쿼리 N번 호출
+ */
+@GetMapping("/api/v2/simple-orders")
+public List<SimpleOrderDto> ordersV2() {
+    List<Order> orders = orderRepository.findAll();
+    List<SimpleOrderDto> result = orders.stream()
+            .map(o -> new SimpleOrderDto(o))
+            .collect(toList());
+
+    return result;
+}
+
+@Data
+static class SimpleOrderDto {
+
+    private Long orderId;
+    private String name;
+    private LocalDateTime orderDate;
+    private OrderStatus orderStatus;
+    private Address address;
+
+    public SimpleOrderDto(Order order) {
+        orderId = order.getId();
+        name = order.getMember().getName();
+        orderDate = order.getOrderDate();
+        orderStatus = order.getStatus();
+        address = order.getDelivery().getAddress();
+    }
+}
+```
+- 엔티티를 DTO로 변환하는 일반적인 방법이다.
+- 쿼리가 총 1 + N + N번 실행된다. (v1과 쿼리수 결과는 같다.)
+- `order` 조회 1번(order 조회 결과 수가 N이 된다.)
+- `order -> member` 지연 로딩 조회 N 번
+- `order -> delivery` 지연 로딩 조회 N 번
+- 예) order의 결과가 4개면 최악의 경우 1 + 4 + 4번 실행된다.(최악의 경우)
+  - 지연로딩은 영속성 컨텍스트에서 조회하므로, 이미 조회된 경우 쿼리를 생략한다.
+
+#### 간단한 주문 조회 V3: 엔티티를 DTO로 변환 - 페치 조인 최적화
+__OrderSimpleApiController - 추가__
+```java
+/**
+ * V3. 엔티티를 조회해서 DTO로 변환(fetch join 사용O)
+ * - fetch join으로 쿼리 1번 호출
+ * 참고: fetch join에 대한 자세한 내용은 JPA 기본편 참고(정말 중요함)
+ */
+@GetMapping("/api/v3/simple-orders")
+public List<SimpleOrderDto> ordersV3() {
+    List<Order> orders = orderRepository.findAllWithMemberDelivery();
+    List<SimpleOrderDto> result = orders.stream()
+            .map(o -> new SimpleOrderDto(o))
+            .collect(toList());
+    return result;
+}
+```
+__OrderRepository - 추가 코드__
+```java
+public List<Order> findAllWithMemberDelivery() {
+    return em.createQuery(
+            "select o from Order o" +
+                    " join fetch o.member m" +
+                    " join fetch o.delivery d", Order.class)
+            .getResultList();
+}
+```
+- 엔티티를 페치 조인(fetch join)을 사용해서 쿼리 1번에 조회
+- 페치 조인으로 `order -> member` , `order -> delivery` 는 이미 조회 된 상태 이므로 지연로딩X
