@@ -18,6 +18,8 @@
     * **[주문 조회 V2: 엔티티를 DTO로 변환](#주문-조회-V2-엔티티를-DTO로-변환)**
     * **[주문 조회 V3: 엔티티를 DTO로 변환 - 페치 조인 최적화](#주문-조회-V3-엔티티를-DTO로-변환---페치-조인-최적화)**
     * **[주문 조회 V3.1: 엔티티를 DTO로 변환 - 페이징과 한계 돌파](#주문-조회-V31-엔티티를-DTO로-변환---페이징과-한계-돌파)**
+    * **[주문 조회 V4: JPA에서 DTO 직접 조회](#주문-조회-V4-JPA에서-DTO-직접-조회)**
+    * **[주문 조회 V5: JPA에서 DTO 직접 조회 - 컬렉션 조회 최적화](#주문-조회-V5-JPA에서-DTO-직접-조회---컬렉션-조회-최적화)**
 
 ## 스프링 부트와 JPA 활용1 - 웹 애플리케이션 개발
 ## 스프링 부트와 JPA 활용2 - API 개발과 성능 최적화
@@ -916,3 +918,202 @@ OrderItem 만큼 중복해서 조회된다. 이 방법은 각각 조회하므로
 에 순간 부하가 증가할 수 있다. 하지만 애플리케이션은 100이든 1000이든 결국 전체 데이터를 로딩해야
 하므로 메모리 사용량이 같다. 1000으로 설정하는 것이 성능상 가장 좋지만, 결국 DB든 애플리케이션이든
 순간 부하를 어디까지 견딜 수 있는지로 결정하면 된다.
+
+#### 주문 조회 V4: JPA에서 DTO 직접 조회
+__OrderApiController에 추가__
+```java
+private final OrderQueryRepository orderQueryRepository;
+
+@GetMapping("/api/v4/orders")
+public List<OrderQueryDto> ordersV4() {
+    return orderQueryRepository.findOrderQueryDtos();
+}
+```
+
+__OrderQueryRepository 추가__   
+```java
+package jpabook.jpashop.repository.order.query;
+
+import lombok.RequiredArgsConstructor;
+import org.springframework.stereotype.Repository;
+
+import javax.persistence.EntityManager;
+import java.util.List;
+import java.util.Map;
+import java.util.stream.Collectors;
+
+@Repository
+@RequiredArgsConstructor
+public class OrderQueryRepository {
+
+    private final EntityManager em;
+
+    /**
+     * 컬렉션은 별도로 조회
+     * Query: 루트 1번, 컬렉션 N 번
+     * 단건 조회에서 많이 사용하는 방식
+     */
+    public List<OrderQueryDto> findOrderQueryDtos() {
+        //루트 조회(toOne 코드를 모두 한번에 조회)
+        List<OrderQueryDto> result = findOrders();
+
+        //루프를 돌면서 컬렉션 추가(추가 쿼리 실행)
+        result.forEach(o -> {
+            List<OrderItemQueryDto> orderItems = findOrderItems(o.getOrderId());
+            o.setOrderItems(orderItems);
+        });
+        return result;
+    }
+
+    /**
+     * 1:N 관계(컬렉션)를 제외한 나머지를 한번에 조회
+     */
+    private List<OrderQueryDto> findOrders() {
+        return em.createQuery(
+                "select new jpabook.jpashop.repository.order.query.OrderQueryDto(o.id, m.name, o.orderDate, o.status, d.address)" +
+                        " from Order o" +
+                        " join o.member m" +
+                        " join o.delivery d", OrderQueryDto.class)
+                .getResultList();
+    }
+
+    /**
+     * 1:N 관계인 orderItems 조회
+     */
+    private List<OrderItemQueryDto> findOrderItems(Long orderId) {
+        return em.createQuery(
+                "select new jpabook.jpashop.repository.order.query.OrderItemQueryDto(oi.order.id, i.name, oi.orderPrice, oi.count)" +
+                        " from OrderItem oi" +
+                        " join oi.item i" +
+                        " where oi.order.id = : orderId", OrderItemQueryDto.class)
+                .setParameter("orderId", orderId)
+                .getResultList();
+    }
+}    
+```
+__OrderQueryDto__   
+```java
+package jpabook.jpashop.repository.order.query;
+
+import jpabook.jpashop.domain.Address;
+import jpabook.jpashop.domain.OrderStatus;
+import lombok.Data;
+import lombok.EqualsAndHashCode;
+
+import java.time.LocalDateTime;
+import java.util.List;
+
+@Data
+@EqualsAndHashCode(of = "orderId")
+public class OrderQueryDto {
+
+    private Long orderId;
+    private String name;
+    private LocalDateTime orderDate; //주문시간
+    private OrderStatus orderStatus;
+    private Address address;
+    private List<OrderItemQueryDto> orderItems;
+
+    public OrderQueryDto(Long orderId, String name, LocalDateTime orderDate, OrderStatus orderStatus, Address address) {
+        this.orderId = orderId;
+        this.name = name;
+        this.orderDate = orderDate;
+        this.orderStatus = orderStatus;
+        this.address = address;
+    }
+
+    public OrderQueryDto(Long orderId, String name, LocalDateTime orderDate, OrderStatus orderStatus, Address address, List<OrderItemQueryDto> orderItems) {
+        this.orderId = orderId;
+        this.name = name;
+        this.orderDate = orderDate;
+        this.orderStatus = orderStatus;
+        this.address = address;
+        this.orderItems = orderItems;
+    }
+}
+```
+__OrderItemQueryDto__   
+```java
+package jpabook.jpashop.repository.order.query;
+
+import com.fasterxml.jackson.annotation.JsonIgnore;
+import lombok.Data;
+
+@Data
+public class OrderItemQueryDto {
+
+    @JsonIgnore
+    private Long orderId; //주문번호
+    private String itemName;//상품 명
+    private int orderPrice; //주문 가격
+    private int count;      //주문 수량
+
+    public OrderItemQueryDto(Long orderId, String itemName, int orderPrice, int count) {
+        this.orderId = orderId;
+        this.itemName = itemName;
+        this.orderPrice = orderPrice;
+        this.count = count;
+    }
+}
+```
+- Query: 루트 1번, 컬렉션 N 번 실행
+- ToOne(N:1, 1:1) 관계들을 먼저 조회하고, ToMany(1:N) 관계는 각각 별도로 처리한다.
+  - 이런 방식을 선택한 이유는 다음과 같다.
+  - ToOne 관계는 조인해도 데이터 row 수가 증가하지 않는다.
+  - ToMany(1:N) 관계는 조인하면 row 수가 증가한다.
+- row 수가 증가하지 않는 ToOne 관계는 조인으로 최적화 하기 쉬우므로 한번에 조회하고, ToMany
+관계는 최적화 하기 어려우므로 `findOrderItems()` 같은 별도의 메서드로 조회한다.
+
+#### 주문 조회 V5: JPA에서 DTO 직접 조회 - 컬렉션 조회 최적화
+__OrderApiController에 추가__   
+```java
+@GetMapping("/api/v5/orders")
+public List<OrderQueryDto> ordersV5() {
+    return orderQueryRepository.findAllByDto_optimization();
+}
+```
+
+__OrderQueryRepository에 추가__
+```java
+/**
+ * 최적화
+ * Query: 루트 1번, 컬렉션 1번
+ * 데이터를 한꺼번에 처리할 때 많이 사용하는 방식
+ *
+ */
+public List<OrderQueryDto> findAllByDto_optimization() {
+
+    //루트 조회(toOne 코드를 모두 한번에 조회)
+    List<OrderQueryDto> result = findOrders();
+
+    //orderItem 컬렉션을 MAP 한방에 조회
+    Map<Long, List<OrderItemQueryDto>> orderItemMap = findOrderItemMap(toOrderIds(result));
+
+    //루프를 돌면서 컬렉션 추가(추가 쿼리 실행X)
+    result.forEach(o -> o.setOrderItems(orderItemMap.get(o.getOrderId())));
+
+    return result;
+}
+
+private List<Long> toOrderIds(List<OrderQueryDto> result) {
+    return result.stream()
+            .map(o -> o.getOrderId())
+            .collect(Collectors.toList());
+}
+
+private Map<Long, List<OrderItemQueryDto>> findOrderItemMap(List<Long> orderIds) {
+    List<OrderItemQueryDto> orderItems = em.createQuery(
+            "select new jpabook.jpashop.repository.order.query.OrderItemQueryDto(oi.order.id, i.name, oi.orderPrice, oi.count)" +
+                    " from OrderItem oi" +
+                    " join oi.item i" +
+                    " where oi.order.id in :orderIds", OrderItemQueryDto.class)
+            .setParameter("orderIds", orderIds)
+            .getResultList();
+
+    return orderItems.stream()
+            .collect(Collectors.groupingBy(OrderItemQueryDto::getOrderId));
+}
+```
+- Query: 루트 1번, 컬렉션 1번
+- ToOne 관계들을 먼저 조회하고, 여기서 얻은 식별자 orderId로 ToMany 관계인 `OrderItem` 을 한꺼번에 조회
+- MAP을 사용해서 매칭 성능 향상(O(1))
