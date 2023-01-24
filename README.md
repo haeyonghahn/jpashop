@@ -16,6 +16,7 @@
   * **[API 개발 고급 - 컬렉션 조회 최적화](#API-개발-고급---컬렉션-조회-최적화)**
     * **[주문 조회 V1: 엔티티 직접 노출](#주문-조회-V1-엔티티-직접-노출)**
     * **[주문 조회 V2: 엔티티를 DTO로 변환](#주문-조회-V2-엔티티를-DTO로-변환)**
+    * **[주문 조회 V3: 엔티티를 DTO로 변환 - 페치 조인 최적화](#주문-조회-V3-엔티티를-DTO로-변환---페치-조인-최적화)**
 
 ## 스프링 부트와 JPA 활용1 - 웹 애플리케이션 개발
 ## 스프링 부트와 JPA 활용2 - API 개발과 성능 최적화
@@ -734,3 +735,63 @@ public class OrderApiController {
 - 엔티티를 직접 노출하므로 좋은 방법은 아니다.
 
 #### 주문 조회 V2: 엔티티를 DTO로 변환
+```java
+@GetMapping("/api/v2/orders")
+public List<OrderDto> ordersV2() {
+    List<Order> orders = orderRepository.findAll();
+    List<OrderDto> result = orders.stream()
+            .map(o -> new OrderDto(o))
+            .collect(toList());
+
+    return result;
+}
+```
+__OrderApiController에 추가__   
+```java
+@Data
+static class OrderDto {
+
+    private Long orderId;
+    private String name;
+    private LocalDateTime orderDate; //주문시간
+    private OrderStatus orderStatus;
+    private Address address;
+    private List<OrderItemDto> orderItems;
+
+    public OrderDto(Order order) {
+        orderId = order.getId();
+        name = order.getMember().getName();
+        orderDate = order.getOrderDate();
+        orderStatus = order.getStatus();
+        address = order.getDelivery().getAddress();
+        orderItems = order.getOrderItems().stream()
+                .map(orderItem -> new OrderItemDto(orderItem))
+                .collect(toList());
+    }
+}
+
+@Data
+static class OrderItemDto {
+
+    private String itemName;//상품 명
+    private int orderPrice; //주문 가격
+    private int count;      //주문 수량
+
+    public OrderItemDto(OrderItem orderItem) {
+        itemName = orderItem.getItem().getName();
+        orderPrice = orderItem.getOrderPrice();
+        count = orderItem.getCount();
+    }
+}
+```
+- 지연 로딩으로 너무 많은 SQL 실행
+- SQL 실행 수
+  - `order` 1번
+  - `member`, `address` N번(order 조회 수 만큼)
+  - `orderItem` N번(order 조회 수 만큼)
+  - `item` N번(orderItem 조회 수 만큼)
+> 참고: 지연 로딩은 영속성 컨텍스트에 있으면 영속성 컨텍스트에 있는 엔티티를 사용하고 없으면 SQL을
+실행한다. 따라서 같은 영속성 컨텍스트에서 이미 로딩한 회원 엔티티를 추가로 조회하면 SQL을 실행하지
+않는다.
+
+#### 주문 조회 V3: 엔티티를 DTO로 변환 - 페치 조인 최적화
