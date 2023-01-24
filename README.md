@@ -15,6 +15,7 @@
     * **[간단한 주문 조회 V4: JPA에서 DTO로 바로 조회](#간단한-주문-조회-V4-JPA에서-DTO로-바로-조회)**
   * **[API 개발 고급 - 컬렉션 조회 최적화](#API-개발-고급---컬렉션-조회-최적화)**
     * **[주문 조회 V1: 엔티티 직접 노출](#주문-조회-V1-엔티티-직접-노출)**
+    * **[주문 조회 V2: 엔티티를 DTO로 변환](#주문-조회-V2-엔티티를-DTO로-변환)**
 
 ## 스프링 부트와 JPA 활용1 - 웹 애플리케이션 개발
 ## 스프링 부트와 JPA 활용2 - API 개발과 성능 최적화
@@ -660,3 +661,76 @@ __쿼리 방식 선택 권장 순서__
 앞의 예제에서는 toOne(OneToOne, ManyToOne) 관계만 있었다. 이번에는 컬렉션인 일대다 관계(OneToMany)를 조회하고, 최적화하는 방법을 알아보자.
 
 #### 주문 조회 V1: 엔티티 직접 노출
+```java
+package jpabook.jpashop.api;
+
+import jpabook.jpashop.domain.Address;
+import jpabook.jpashop.domain.Order;
+import jpabook.jpashop.domain.OrderItem;
+import jpabook.jpashop.domain.OrderStatus;
+import jpabook.jpashop.repository.*;
+import jpabook.jpashop.repository.order.query.OrderFlatDto;
+import jpabook.jpashop.repository.order.query.OrderItemQueryDto;
+import jpabook.jpashop.repository.order.query.OrderQueryDto;
+import jpabook.jpashop.repository.order.query.OrderQueryRepository;
+import lombok.Data;
+import lombok.RequiredArgsConstructor;
+import org.springframework.web.bind.annotation.GetMapping;
+import org.springframework.web.bind.annotation.RequestParam;
+import org.springframework.web.bind.annotation.RestController;
+
+import java.time.LocalDateTime;
+import java.util.List;
+
+import static java.util.stream.Collectors.*;
+
+
+/**
+ * V1. 엔티티 직접 노출
+ * - 엔티티가 변하면 API 스펙이 변한다.
+ * - 트랜잭션 안에서 지연 로딩 필요
+ * - 양방향 연관관계 문제
+ *
+ * V2. 엔티티를 조회해서 DTO로 변환(fetch join 사용X)
+ * - 트랜잭션 안에서 지연 로딩 필요
+ * V3. 엔티티를 조회해서 DTO로 변환(fetch join 사용O)
+ * - 페이징 시에는 N 부분을 포기해야함(대신에 batch fetch size? 옵션 주면 N -> 1 쿼리로 변경 가능)
+ *
+ * V4. JPA에서 DTO로 바로 조회, 컬렉션 N 조회 (1 + N Query)
+ * - 페이징 가능
+ * V5. JPA에서 DTO로 바로 조회, 컬렉션 1 조회 최적화 버전 (1 + 1 Query)
+ * - 페이징 가능
+ * V6. JPA에서 DTO로 바로 조회, 플랫 데이터(1Query) (1 Query)
+ * - 페이징 불가능...
+ *
+ */
+@RestController
+@RequiredArgsConstructor
+public class OrderApiController {
+
+    private final OrderRepository orderRepository;
+    private final OrderQueryRepository orderQueryRepository;
+
+    /**
+     * V1. 엔티티 직접 노출
+     * - Hibernate5Module 모듈 등록, LAZY=null 처리
+     * - 양방향 관계 문제 발생 -> @JsonIgnore
+     */
+    @GetMapping("/api/v1/orders")
+    public List<Order> ordersV1() {
+        List<Order> all = orderRepository.findAll();
+        for (Order order : all) {
+            order.getMember().getName(); //Lazy 강제 초기화
+            order.getDelivery().getAddress(); //Lazy 강제 초기환
+            List<OrderItem> orderItems = order.getOrderItems();
+            orderItems.stream().forEach(o -> o.getItem().getName()); //Lazy 강제 초기화
+        }
+        return all;
+    }
+}
+```
+- `orderItem`, `item` 관계를 직접 초기화하면 `Hibernate5Module` 설정에 의해 엔티티를 JSON으로 생성한다.
+- 양방향 연관관계면 무한 루프에 걸리지 않게 한곳에 `@JsonIgnore` 를 추가해야 한다.
+- 엔티티를 직접 노출하므로 좋은 방법은 아니다.
+
+#### 주문 조회 V2: 엔티티를 DTO로 변환
