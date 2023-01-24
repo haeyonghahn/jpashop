@@ -20,6 +20,7 @@
     * **[주문 조회 V3.1: 엔티티를 DTO로 변환 - 페이징과 한계 돌파](#주문-조회-V31-엔티티를-DTO로-변환---페이징과-한계-돌파)**
     * **[주문 조회 V4: JPA에서 DTO 직접 조회](#주문-조회-V4-JPA에서-DTO-직접-조회)**
     * **[주문 조회 V5: JPA에서 DTO 직접 조회 - 컬렉션 조회 최적화](#주문-조회-V5-JPA에서-DTO-직접-조회---컬렉션-조회-최적화)**
+    * **[주문 조회 V6: JPA에서 DTO로 직접 조회, 플랫 데이터 최적화](#주문-조회-V6-JPA에서-DTO로-직접-조회-플랫-데이터-최적화)**
 
 ## 스프링 부트와 JPA 활용1 - 웹 애플리케이션 개발
 ## 스프링 부트와 JPA 활용2 - API 개발과 성능 최적화
@@ -1021,15 +1022,6 @@ public class OrderQueryDto {
         this.orderStatus = orderStatus;
         this.address = address;
     }
-
-    public OrderQueryDto(Long orderId, String name, LocalDateTime orderDate, OrderStatus orderStatus, Address address, List<OrderItemQueryDto> orderItems) {
-        this.orderId = orderId;
-        this.name = name;
-        this.orderDate = orderDate;
-        this.orderStatus = orderStatus;
-        this.address = address;
-        this.orderItems = orderItems;
-    }
 }
 ```
 __OrderItemQueryDto__   
@@ -1117,3 +1109,88 @@ private Map<Long, List<OrderItemQueryDto>> findOrderItemMap(List<Long> orderIds)
 - Query: 루트 1번, 컬렉션 1번
 - ToOne 관계들을 먼저 조회하고, 여기서 얻은 식별자 orderId로 ToMany 관계인 `OrderItem` 을 한꺼번에 조회
 - MAP을 사용해서 매칭 성능 향상(O(1))
+
+#### 주문 조회 V6: JPA에서 DTO로 직접 조회, 플랫 데이터 최적화
+__OrderApiController에 추가__
+```java
+@GetMapping("/api/v6/orders")
+public List<OrderQueryDto> ordersV6() {
+    List<OrderFlatDto> flats = orderQueryRepository.findAllByDto_flat();
+
+    return flats.stream()
+            .collect(groupingBy(o -> new OrderQueryDto(o.getOrderId(), o.getName(), o.getOrderDate(), o.getOrderStatus(), o.getAddress()),
+                    mapping(o -> new OrderItemQueryDto(o.getOrderId(), o.getItemName(), o.getOrderPrice(), o.getCount()), toList())
+            )).entrySet().stream()
+            .map(e -> new OrderQueryDto(e.getKey().getOrderId(), e.getKey().getName(), e.getKey().getOrderDate(), e.getKey().getOrderStatus(), e.getKey().getAddress(), e.getValue()))
+            .collect(toList());
+}
+```
+
+__OrderQueryDto에 생성자 추가__
+```java
+public OrderQueryDto(Long orderId, String name, LocalDateTime orderDate, OrderStatus orderStatus, Address address, List<OrderItemQueryDto> orderItems) {
+    this.orderId = orderId;
+    this.name = name;
+    this.orderDate = orderDate;
+    this.orderStatus = orderStatus;
+    this.address = address;
+    this.orderItems = orderItems;
+}
+```
+
+__OrderQueryRepository에 추가__
+```java
+public List<OrderFlatDto> findAllByDto_flat() {
+    return em.createQuery(
+            "select new jpabook.jpashop.repository.order.query.OrderFlatDto(o.id, m.name, o.orderDate, o.status, d.address, i.name, oi.orderPrice, oi.count)" +
+                    " from Order o" +
+                    " join o.member m" +
+                    " join o.delivery d" +
+                    " join o.orderItems oi" +
+                    " join oi.item i", OrderFlatDto.class)
+            .getResultList();
+}
+```
+
+__OrderFlatDto__
+```java
+package jpabook.jpashop.repository.order.query;
+
+import jpabook.jpashop.domain.Address;
+import jpabook.jpashop.domain.OrderStatus;
+import lombok.Data;
+
+import java.time.LocalDateTime;
+
+@Data
+public class OrderFlatDto {
+
+    private Long orderId;
+    private String name;
+    private LocalDateTime orderDate; //주문시간
+    private Address address;
+    private OrderStatus orderStatus;
+
+    private String itemName;//상품 명
+    private int orderPrice; //주문 가격
+    private int count;      //주문 수량
+
+    public OrderFlatDto(Long orderId, String name, LocalDateTime orderDate, OrderStatus orderStatus, Address address, String itemName, int orderPrice, int count) {
+        this.orderId = orderId;
+        this.name = name;
+        this.orderDate = orderDate;
+        this.orderStatus = orderStatus;
+        this.address = address;
+        this.itemName = itemName;
+        this.orderPrice = orderPrice;
+        this.count = count;
+    }
+
+}
+```
+- Query: 1번
+- 단점
+  - 쿼리는 한번이지만 조인으로 인해 DB에서 애플리케이션에 전달하는 데이터에 중복 데이터가
+추가되므로 상황에 따라 V5 보다 더 느릴 수 도 있다.
+  - 애플리케이션에서 추가 작업이 크다.
+  - 페이징 불가능
